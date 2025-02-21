@@ -15,3 +15,6 @@ ticket 생성 방식 poisson 방식
 [go-state-types/builtin/v16/miner/policy.go at master · filecoin-project/go-state-types](https://github.com/filecoin-project/go-state-types/blob/master/builtin/v16/miner/policy.go#L53)
 f3 적용 시 epoch 정보는 manifestData로 업데이트 될 확률이 높음
 [f3-activation-contract/contracts/F3Parameters.sol at master · filecoin-project/f3-activation-contract](https://github.com/filecoin-project/f3-activation-contract/blob/master/contracts/F3Parameters.sol#L47)
+
+보상 시스템에 대한 논쟁. 현재는 보상 관련
+https://filecoinproject.slack.com/archives/C0556MSR945/p1700420875646989?thread_ts=1700414150.102549&cid=C0556MSR945
