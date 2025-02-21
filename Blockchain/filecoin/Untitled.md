@@ -1,5 +1,8 @@
 
-ticket 방식에서 poisson 방식으로 변경
+ticket 생성 방식 poisson 방식
+[lotus/chain/gen/gen.go at master · filecoin-project/lotus](https://github.com/filecoin-project/lotus/blob/master/chain/gen/gen.go#L356)
+[lotus/chain/gen/gen.go at master · filecoin-project/lotus](https://github.com/filecoin-project/lotus/blob/master/chain/gen/gen.go#L653)
+[lotus/chain/types/electionproof.go at master · filecoin-project/lotus](https://github.com/filecoin-project/lotus/blob/master/chain/types/electionproof.go#L180)
 [Initial implementation of Poisson Sortition by Kubuxu · Pull Request #2084 · filecoin-project/lotus](https://github.com/filecoin-project/lotus/pull/2084/files)
 
 부모 tipset 선정
