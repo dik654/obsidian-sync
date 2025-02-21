@@ -16,5 +16,9 @@ ticket 생성 방식 poisson 방식
 f3 적용 시점 epoch 정보 업데이트
 [f3-activation-contract/contracts/F3Parameters.sol at master · filecoin-project/f3-activation-contract](https://github.com/filecoin-project/f3-activation-contract/blob/master/contracts/F3Parameters.sol#L47)
 
+f3 참여
+[lotus/chain/lf3/participation.go at fc547054d71e724d6b802c3a4518e2d85c1e34e8 · filecoin-project/lotus](https://github.com/filecoin-project/lotus/blob/fc547054d71e724d6b802c3a4518e2d85c1e34e8/chain/lf3/participation.go#L173)
+[lotus/chain/lf3/participation_lease.go at fc547054d71e724d6b802c3a4518e2d85c1e34e8 · filecoin-project/lotus](https://github.com/filecoin-project/lotus/blob/fc547054d71e724d6b802c3a4518e2d85c1e34e8/chain/lf3/participation_lease.go#L92)
+
 보상 시스템에 대한 논쟁. 현재는 보상 관련
 https://filecoinproject.slack.com/archives/C0556MSR945/p1700420875646989?thread_ts=1700414150.102549&cid=C0556MSR945
