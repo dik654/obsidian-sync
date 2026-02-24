@@ -518,3 +518,194 @@ step46: Optimizer로 업데이트 분리        + MSE (회귀)
 step47: 분류 도구 도입                  + Softmax + Cross-Entropy
 step48: 실전 학습                       + Spiral 데이터셋 + 미니배치 + 셔플
 ```
+
+## step48 → step49: 무엇이 바뀌었나
+
+step48과 step49는 **학습 결과가 완전히 동일**하다 (Final loss: 0.0815). 바뀐 것은 **코드의 구조**뿐이다.
+
+||step48|step49|
+|---|---|---|
+|데이터 획득|`get_spiral()` 함수 → 원시 튜플|`Spiral::new()` → Dataset 객체|
+|크기 조회|`x_data.shape()[0]`|`train_set.len()`|
+|샘플 접근|`x_data[[i, j]]`, `t_data[i]` 직접|`train_set.get(i)` → `(Vec<f64>, usize)`|
+|배치 추출|`batch_select()` 헬퍼 직접 구현|`get()` 반복으로 조립|
+|다른 데이터셋 사용 시|학습 루프 전체 수정|**한 줄**만 변경|
+
+---
+
+## 왜 Dataset 추상화가 필요한가
+
+### 문제: step48의 한계
+
+step48에서 데이터를 다루는 방식:
+
+```rust
+// 1. 함수가 원시 배열을 직접 반환
+let (x_data, t_data) = get_spiral(true);
+
+// 2. 배열의 shape에서 크기를 직접 읽음
+let data_size = x_data.shape()[0];
+
+// 3. 배치 추출을 위한 헬퍼 함수를 직접 구현해야 함
+fn batch_select(x: &ArrayD<f64>, indices: &[usize]) -> ArrayD<f64> { ... }
+let batch_x = Variable::new(batch_select(&x_data, batch_index));
+let batch_t: Vec<usize> = batch_index.iter().map(|&idx| t_data[idx]).collect();
+```
+
+이 방식의 문제:
+
+- 데이터셋마다 **반환 형태가 다를 수 있다** (2D vs 3D, 라벨이 usize vs Vec 등)
+- 데이터셋을 바꾸면 **학습 루프의 배치 추출 코드도 수정**해야 함
+- `batch_select` 같은 유틸리티를 매번 새로 만들어야 함
+
+### 해결: 통일된 인터페이스
+
+```rust
+// 어떤 데이터셋이든 이 두 메서드만 있으면 된다
+trait Dataset {
+    fn len(&self) -> usize;                        // 총 샘플 수
+    fn get(&self, index: usize) -> (Vec<f64>, usize);  // i번째 샘플
+}
+```
+
+학습 루프는 `Dataset` 트레잇에만 의존하므로, 데이터셋을 바꿀 때:
+
+```rust
+let train_set = Spiral::new(true);    // ← 여기만 변경하면
+let train_set = MNIST::new(true);     //    나머지 학습 코드는
+let train_set = CIFAR10::new(true);   //    그대로 동작
+```
+
+---
+
+## Python과의 대응
+
+### Python (step49)
+
+```python
+class Dataset:
+    def __init__(self, train=True):
+        self.data = None
+        self.label = None
+        self.prepare()          # 서브클래스가 오버라이드
+
+    def __getitem__(self, index):   # dataset[i]
+        return self.data[index], self.label[index]
+
+    def __len__(self):              # len(dataset)
+        return len(self.data)
+
+class Spiral(Dataset):
+    def prepare(self):
+        self.data, self.label = get_spiral(self.train)
+```
+
+### Rust (step49)
+
+```rust
+pub trait Dataset {
+    fn len(&self) -> usize;
+    fn get(&self, index: usize) -> (Vec<f64>, usize);
+}
+
+pub struct Spiral {
+    data: ArrayD<f64>,     // (300, 2)
+    label: Vec<usize>,     // [0, 1, 2, ...]
+}
+
+impl Spiral {
+    pub fn new(train: bool) -> Self {
+        let (data, label) = get_spiral(train);
+        Spiral { data, label }
+    }
+}
+
+impl Dataset for Spiral {
+    fn len(&self) -> usize {
+        self.data.shape()[0]
+    }
+    fn get(&self, index: usize) -> (Vec<f64>, usize) {
+        let cols = self.data.shape()[1];
+        let x: Vec<f64> = (0..cols).map(|j| self.data[[index, j]]).collect();
+        (x, self.label[index])
+    }
+}
+```
+
+|Python|Rust|역할|
+|---|---|---|
+|`class Dataset`|`trait Dataset`|공통 인터페이스 정의|
+|`__getitem__(self, i)`|`fn get(&self, i)`|개별 샘플 접근|
+|`__len__(self)`|`fn len(&self)`|데이터셋 크기|
+|`class Spiral(Dataset)`|`impl Dataset for Spiral`|구체적 데이터셋 구현|
+|`prepare()` 오버라이드|`new()` 생성자|데이터 초기화|
+
+> **설계 차이**: Python은 `__init__` → `prepare()` 템플릿 메서드 패턴을 사용하지만, Rust는 각 구조체의 `new()`에서 직접 초기화하는 것이 더 자연스럽다. 트레잇은 **사용 인터페이스**(len, get)만 강제하고, 생성 방식은 각 구현체에 맡긴다.
+
+---
+
+## 배치 추출 방식의 변화
+
+### step48: 배열 레벨 직접 조작
+
+```rust
+// 전용 헬퍼 함수가 필요
+fn batch_select(x: &ArrayD<f64>, indices: &[usize]) -> ArrayD<f64> {
+    let mut batch = ArrayD::zeros(IxDyn(&[indices.len(), cols]));
+    for (bi, &idx) in indices.iter().enumerate() {
+        for j in 0..cols {
+            batch[[bi, j]] = x[[idx, j]];
+        }
+    }
+    batch
+}
+
+// 입력과 라벨을 각각 다른 방식으로 추출
+let batch_x = Variable::new(batch_select(&x_data, batch_index));
+let batch_t: Vec<usize> = batch_index.iter().map(|&idx| t_data[idx]).collect();
+```
+
+### step49: Dataset.get()으로 통일
+
+```rust
+// Python: batch = [train_set[i] for i in batch_index]
+//         batch_x = np.array([example[0] for example in batch])
+//         batch_t = np.array([example[1] for example in batch])
+let mut batch_x_data = Vec::new();
+let mut batch_t = Vec::new();
+for &idx in batch_index {
+    let (x, t) = train_set.get(idx);   // Dataset 인터페이스
+    batch_x_data.extend_from_slice(&x);
+    batch_t.push(t);
+}
+let batch_x = Variable::new(
+    ArrayD::from_shape_vec(IxDyn(&[batch_size, 2]), batch_x_data).unwrap()
+);
+```
+
+`batch_select` 같은 배열 전용 헬퍼가 사라지고, `get()`으로 샘플을 하나씩 꺼내서 조립하는 패턴으로 바뀌었다. 데이터의 내부 저장 형태(ArrayD인지, 파일에서 읽는지)를 몰라도 된다.
+
+---
+
+## 추상화의 전체 흐름 (step43 → step49)
+
+```
+step43: 파라미터(W, b) 개별 관리         → Variable 4개 직접 선언
+step44: Layer로 파라미터 묶기             → Linear이 W, b를 내부 관리
+step45: Model로 레이어 묶기              → model.cleargrads() 한 번으로
+step46: Optimizer로 업데이트 분리         → optimizer.update() 한 줄
+step47: 분류 도구 (Softmax, CE)          → softmax_cross_entropy_simple()
+step48: 실전 학습 (미니배치, 셔플)         → get_spiral() + 수동 배치 추출
+step49: Dataset으로 데이터셋 추상화       → train_set.get(i)로 통일
+```
+
+매 단계마다 하나의 관심사를 분리해서 추상화하고 있다:
+
+| step | 분리한 관심사  | 추상화 수단                  |
+| ---- | -------- | ----------------------- |
+| 44   | 파라미터 관리  | `Linear` (Layer)        |
+| 45   | 레이어 관리   | `Model` 트레잇             |
+| 46   | 업데이트 로직  | `SGD` (Optimizer)       |
+| 47   | 분류 손실 계산 | `SoftmaxCrossEntropyFn` |
+| 48   | 학습 루프    | 미니배치 + 에폭 + 셔플          |
+| 49   | 데이터셋 접근  | `Dataset` 트레잇           |
