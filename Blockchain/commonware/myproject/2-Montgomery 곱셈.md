@@ -1,6 +1,246 @@
 ##   
 Step 2-4: Montgomery 곱셈
 
+# Montgomery 곱셈 - 기호 정의 및 알고리즘
+
+## 1. 기호 정의
+
+### 1.1 기본 파라미터
+- $p$: 소수 (modulus)
+  - 예: secp256k1의 `0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F`
+- $R$: Montgomery 상수 = $2^{256}$
+- $a, b$: 일반 형식(normal form)의 숫자
+
+---
+
+### 1.2 Montgomery 형식
+- $a_{\text{mont}} = a \cdot R \bmod p$: $a$를 Montgomery 형식으로 변환
+- $b_{\text{mont}} = b \cdot R \bmod p$: $b$를 Montgomery 형식으로 변환
+- $(a \cdot b)_{\text{mont}} = a \cdot b \cdot R \bmod p$: 곱셈 결과의 Montgomery 형식
+
+---
+
+### 1.3 역원 (Modular Inverses)
+
+#### $p^{-1}$: $p$의 $\bmod R$ 역원
+$$p \cdot p^{-1} \equiv 1 \pmod{R}$$
+- **용도**: REDC에서 $m$ 계산 시 사용
+- **계산**: 초기화 때 한 번만 (확장 유클리드 알고리즘)
+
+#### $R^{-1}$: $R$의 $\bmod p$ 역원
+$$R \cdot R^{-1} \equiv 1 \pmod{p}$$
+- **용도**: REDC 결과의 수학적 의미 ($T \cdot R^{-1} \bmod p$)
+- **직접 사용 안 함**: 알고리즘 증명에만 등장
+
+---
+
+### 1.4 REDC 알고리즘 변수
+
+| 기호 | 정의 | 크기 | 의미 |
+|------|------|------|------|
+| $T$ | $a_{\text{mont}} \times b_{\text{mont}}$ | 512비트 | 곱셈 중간 결과 |
+| $p'$ | $-p^{-1} \bmod R$ | 256비트 | 미리 계산된 상수 |
+| $m$ | $T \cdot p' \bmod R$ | 256비트 | 보정값 |
+| $t$ | $(T + m \cdot p) / R$ | 256비트 | 최종 결과 |
+
+---
+
+## 2. REDC 알고리즘
+
+### 2.1 목표
+$$\text{REDC}(T) = T \cdot R^{-1} \bmod p$$
+
+입력 $T$ (512비트)를 받아서 $T \cdot R^{-1} \bmod p$ (256비트)를 계산
+
+---
+
+### 2.2 계산 단계
+
+#### Step 1: $m$ 계산
+$$m = (T \cdot p') \bmod R$$
+
+**의미**: $(T + m \cdot p)$가 $R$의 배수가 되도록 하는 값
+
+[목표]
+T * R^(-1) mod p를 빠르게 계산
+
+↓
+
+[아이디어]
+T를 R로 나누면 되는데, R = 2^256이니까 shift 쓰자!
+
+↓
+
+[문제]
+T는 R의 배수가 아니라서 shift만으로는 안 됨
+
+↓
+
+[해결책 1]
+T에 뭔가를 더해서 R의 배수로 만들자
+
+↓
+
+[해결책 2]
+더하는 값은 "p의 배수" 형태여야 mod p에서 값이 안 바뀜
+
+↓
+
+[결론]
+T + m*p 형태를 찾자!
+- (T + m*p) ≡ 0 (mod R)  ← shift 가능
+- (T + m*p) ≡ T (mod p)  ← 값 보존
+
+**증명**:
+$$
+\begin{align}
+p' &\equiv -p^{-1} \pmod{R} \\
+m &\equiv -T \cdot p^{-1} \pmod{R} \\
+m \cdot p &\equiv -T \pmod{R} \\
+T + m \cdot p &\equiv 0 \pmod{R} \quad \checkmark
+\end{align}
+$$
+
+**구현**: 하위 256비트만 취함 (비트 마스킹)
+```rust
+let m = (T.low_256() * P_PRIME) & MASK_256;
+```
+
+---
+
+#### Step 2: $t$ 계산
+$$t = \frac{T + m \cdot p}{R}$$
+
+**의미**: $(T + m \cdot p)$는 $R$의 배수이므로 정확히 나누어떨어짐
+
+**구현**: $R = 2^{256}$이므로 256비트 우측 시프트
+```rust
+let t = (T + (m as U512) * (p as U512)) >> 256;
+```
+
+---
+
+#### Step 3: 범위 조정
+$$
+\text{result} = 
+\begin{cases}
+t - p & \text{if } t \geq p \\
+t & \text{otherwise}
+\end{cases}
+$$
+
+**이유**: $t$는 $[0, 2p)$ 범위일 수 있으므로 $[0, p)$로 조정
+
+---
+
+### 2.3 정확성 증명
+
+**증명**: $t \equiv T \cdot R^{-1} \pmod{p}$
+
+$$
+\begin{align}
+t &= \frac{T + m \cdot p}{R} \\
+\\
+t \cdot R &= T + m \cdot p \\
+\\
+t \cdot R &\equiv T \pmod{p} 
+\quad (\because m \cdot p \equiv 0 \pmod{p}) \\
+\\
+t &\equiv T \cdot R^{-1} \pmod{p} \quad \checkmark
+\end{align}
+$$
+
+---
+
+## 3. Montgomery 곱셈 전체
+
+### 3.1 입력
+- $a_{\text{mont}} = a \cdot R \bmod p$
+- $b_{\text{mont}} = b \cdot R \bmod p$
+
+### 3.2 출력
+- $(a \cdot b)_{\text{mont}} = a \cdot b \cdot R \bmod p$
+
+### 3.3 과정
+
+**Step 1**: 일반 곱셈
+$$
+\begin{align}
+T &= a_{\text{mont}} \times b_{\text{mont}} \\
+&= (a \cdot R) \times (b \cdot R) \\
+&= a \cdot b \cdot R^2 \bmod p
+\end{align}
+$$
+
+**Step 2**: REDC로 $R$ 하나 제거
+$$
+\begin{align}
+\text{REDC}(T) &= T \cdot R^{-1} \bmod p \\
+&= (a \cdot b \cdot R^2) \cdot R^{-1} \bmod p \\
+&= a \cdot b \cdot R \bmod p \\
+&= (a \cdot b)_{\text{mont}} \quad \checkmark
+\end{align}
+$$
+
+---
+
+## 4. 핵심 요약
+
+### 4.1 두 가지 역원
+
+| 역원 | 정의 | 모듈로 | 사용처 |
+|------|------|--------|--------|
+| $p^{-1}$ | $p \cdot p^{-1} \equiv 1$ | $\bmod R$ | $m$ 계산 (실제 코드) |
+| $R^{-1}$ | $R \cdot R^{-1} \equiv 1$ | $\bmod p$ | 수학적 의미 (증명) |
+
+### 4.2 REDC의 두 얼굴
+
+| 관점 | 표현 |
+|------|------|
+| **수학적 의미** | $T \cdot R^{-1} \bmod p$ |
+| **계산 방법** | $m = T \cdot p' \bmod R$, then $(T + m \cdot p) / R$ |
+
+### 4.3 왜 빠른가?
+
+| 일반 곱셈 | Montgomery 곱셈 |
+|-----------|-----------------|
+| 512비트 ÷ 256비트 나눗셈 | 256비트 마스킹 + shift + 뺄셈 1회 |
+| 수십~수백 사이클 | 몇 사이클 |
+
+**속도 차이: 10~100배**
+
+---
+
+## 5. 구현 예시
+
+```rust
+// 초기화 (한 번만)
+const P: U256 = /* 소수 */;
+const R: U256 = U256::MAX; // 2^256 - 1 (mask용)
+const P_PRIME: U256 = compute_p_inverse(P); // -p^(-1) mod R
+
+// REDC
+fn redc(T: U512, p: U256, p_prime: U256) -> U256 {
+    // Step 1: m = (T * p') mod R
+    let m = (T.low_256() * p_prime) & R;
+    
+    // Step 2: t = (T + m*p) / R
+    let t = (T + (m as U512) * (p as U512)) >> 256;
+    
+    // Step 3: 범위 조정
+    if t >= p { 
+        (t - p) as U256 
+    } else { 
+        t as U256 
+    }
+}
+
+// Montgomery 곱셈
+fn mont_mul(a_mont: U256, b_mont: U256) -> U256 {
+    let T = (a_mont as U512) * (b_mont as U512);
+    redc(T, P, P_PRIME)
+}
+```
 ### 핵심 질문
 
 > `(a * b) mod p`를 하려면 나눗셈이 필요한데, 나눗셈은 곱셈보다 10배 이상 느리다. 어떻게 피하지?
@@ -18,36 +258,226 @@ Step 2-4: Montgomery 곱셈
 
 ZK 증명에서는 모듈러 곱셈을 **수백만 번** 한다. 매번 나눗셈하면 느리다.
 
-### Montgomery의 아이디어
+## Montgomery의 아이디어
 
 Peter Montgomery (1985):
-
 > "숫자를 저장할 때 $a$ 대신 $a \cdot R \bmod p$를 저장하면, 나눗셈 대신 비트 시프트로 곱셈할 수 있다."
 
 $R = 2^{256}$ (= $2^{64 \times 4}$, limb 수 × 64)
 
-```
-일반 표현 (normal form):     a
-Montgomery 표현 (mont form): a_mont = a * R mod p
-```
+$$
+\begin{align}
+\text{일반 표현 (normal form):} \quad & a \\
+\text{Montgomery 표현 (mont form):} \quad & a_{\text{mont}} = a \cdot R \bmod p
+\end{align}
+$$
 
-### 왜 R = 2^256이면 나눗셈이 사라지나?
+---
 
-$2^{256}$으로 나누기 = **256-bit 오른쪽 시프트**. 컴퓨터에게 시프트는 거의 공짜.
+## 일반 곱셈 vs Montgomery 곱셈의 mod p 방식
 
-단, `mod p`를 유지해야 하므로 순수 시프트만으로는 안 되고, **REDC** 알고리즘이 필요하다.
+### 1. 일반 곱셈의 mod p
 
-### Montgomery 곱셈의 흐름
+$$c = (a \cdot b) \bmod p$$
 
-```
-입력: a_mont = a*R mod p,  b_mont = b*R mod p
-목표: (a*b)_mont = a*b*R mod p
+**문제점:**
+- $a \cdot b$는 최대 512비트 (256비트 × 2)
+- 이걸 256비트 소수 $p$로 나눠야 함
+- **512비트 ÷ 256비트 나눗셈** 필요 → 매우 느림
 
-단계 1: a_mont * b_mont = a*b*R^2 mod p    (그냥 곱셈)
-단계 2: REDC로 R을 하나 제거 → a*b*R mod p  (이게 (a*b)_mont!)
-```
+---
 
-**REDC가 "R로 나누기"를 시프트로 해주는 것이 핵심.**
+### 2. Montgomery 곱셈의 mod p (REDC)
+
+## REDC 알고리즘
+
+### 목표 (수학적 의미)
+$$\text{출력} = T \cdot R^{-1} \bmod p$$
+
+### 입력
+$$T \quad \text{(최대 512비트)}$$
+
+### 계산 방법
+
+**1단계:** $m$을 계산
+$$m \equiv -T \cdot p^{-1} \pmod{R}$$
+
+**2단계:** $t$를 계산
+$$t = \frac{T + m \cdot p}{R}$$
+
+**3단계:** 범위 조정
+$$
+\text{if } t \geq p: \text{ return } t - p \\
+\text{else: return } t
+$$
+
+### 왜 이게 $T \cdot R^{-1} \bmod p$가 되나?
+
+**증명:**
+$$
+\begin{align}
+t &= \frac{T + m \cdot p}{R} \\
+t \cdot R &= T + m \cdot p \\
+t \cdot R &\equiv T \pmod{p} \quad (\because m \cdot p \equiv 0 \pmod{p}) \\
+t &\equiv T \cdot R^{-1} \pmod{p}
+\end{align}
+$$
+
+REDC 알고리즘의 핵심:
+REDC 전체 알고리즘 = R^(-1) 곱셈의 효과
+$$
+\begin{align}
+\text{입력:} \quad & T = a_{\text{mont}} \cdot b_{\text{mont}} \text{ (최대 512비트)} \\
+\text{목표:} \quad & T \cdot R^{-1} \bmod p
+\end{align}
+$$
+
+**단계:**
+
+$$
+\begin{align}
+1. \quad & m = (T \cdot p') \bmod R \quad \text{where } p' = -p^{-1} \bmod R \\
+2. \quad & t = \frac{T + m \cdot p}{R} \quad \text{(이 나눗셈이 정확히 떨어짐!)} \\
+3. \quad & \text{if } t \geq p: \text{ return } t - p \text{ else: return } t
+\end{align}
+$$
+
+### 원하는 조건
+
+$$T + m \cdot p \equiv 0 \pmod{R}$$
+
+### 양변 정리
+
+$$m \cdot p \equiv -T \pmod{R}$$
+
+### 양변에 $p^{-1}$ 곱하기
+
+$p^{-1}$은 "$p$의 $\bmod R$에서의 역원"입니다.
+
+즉: 
+$$p \cdot p^{-1} \equiv 1 \pmod{R}$$
+
+따라서:
+
+$$
+\begin{align}
+m \cdot p \cdot p^{-1} &\equiv -T \cdot p^{-1} \pmod{R} \\
+m \cdot 1 &\equiv -T \cdot p^{-1} \pmod{R} \\
+m &\equiv -T \cdot p^{-1} \pmod{R}
+\end{align}
+$$
+
+**끝!** 이게 바로 $m$의 공식입니다.
+
+**핵심 차이점:**
+
+| 단계 | 연산 | 비용 |
+|------|------|------|
+| $m = (T \cdot p') \bmod R$ | **256비트만 취함** (하위 비트) | 비트 마스킹 (거의 공짜) |
+| $t = (T + m \cdot p) / R$ | $R$로 나눗셈 = **256비트 시프트** | 거의 공짜 |
+| $\text{if } t \geq p$ | 비교 + 뺄셈 1회 | 매우 빠름 |
+
+---
+
+### $(T + m \cdot p)$가 $R$의 배수인 이유
+
+$$
+\begin{align}
+m &\equiv -T \cdot p^{-1} \pmod{R} \\
+\\
+\therefore T + m \cdot p &\equiv T - T \cdot p^{-1} \cdot p \pmod{R} \\
+&\equiv T - T \pmod{R} \\
+&\equiv 0 \pmod{R}
+\end{align}
+$$
+
+즉, $(T + m \cdot p)$는 **수학적으로 보장되게** $R$의 배수이므로, $/R$은 **나머지가 0인 정확한 나눗셈**입니다.
+
+---
+
+### 결론
+
+- **"mod p를 안 한다"가 아니라 "느린 나눗셈을 안 한다"**
+- 일반 mod: 512÷256 긴 나눗셈
+- Montgomery: 256비트 마스킹 + 256비트 시프트 + 조건부 뺄셈 1회
+- **속도 차이: 약 10~100배**
+
+---
+
+### $R^{-1}$ 표기의 의미
+
+### 모듈러 역원의 정의
+
+$$R \cdot R^{-1} \equiv 1 \pmod{p}$$
+
+**예시:** $p = 17$, $R = 2^8 = 256$일 때:
+
+$$
+\begin{align}
+256 \cdot R^{-1} &\equiv 1 \pmod{17} \\
+256 &\equiv 1 \pmod{17} \quad (\because 256 = 15 \times 17 + 1) \\
+\therefore R^{-1} &\equiv 1 \pmod{17}
+\end{align}
+$$
+
+---
+
+### 왜 "$/R$"이 아니라 "$\cdot R^{-1}$"로 쓰나?
+
+**모듈러 연산에서는 나눗셈이 정의되지 않음**
+
+일반 산술:
+$$10 / 2 = 5$$
+
+모듈러 산술:
+$$
+\begin{align}
+10 / 2 \pmod{7} &= \text{ ?  ← 의미 없음!} \\
+\\
+\text{대신:} \quad 10 \cdot 2^{-1} &\pmod{7} \\
+&= 10 \cdot 4 \pmod{7} \quad (\because 2 \cdot 4 \equiv 1 \pmod{7}) \\
+&= 40 \pmod{7} \\
+&= 5
+\end{align}
+$$
+
+---
+
+## Montgomery 전체 흐름
+
+### 변환: normal → Montgomery
+$$a \rightarrow a \cdot R \bmod p$$
+
+### Montgomery 곱셈
+$$
+\begin{align}
+(a \cdot R) \cdot (b \cdot R) &= a \cdot b \cdot R^2 \\
+\downarrow \text{ REDC} &\text{ (수학적으로 } R^{-1} \text{ 곱셈)} \\
+a \cdot b \cdot R &
+\end{align}
+$$
+
+### 변환: Montgomery → normal
+$$(a \cdot R) \cdot R^{-1} \bmod p = a$$
+
+---
+
+## 저장 vs 연산
+
+### ✅ "a 대신 $a \cdot R \bmod p$를 저장한다"
+→ **데이터 표현 방식** 설명  
+→ 완벽히 정확
+
+### ✅ "REDC는 $T \cdot R^{-1} \bmod p$를 계산한다"
+→ **알고리즘의 수학적 의미** 설명  
+→ 완벽히 정확
+
+| 표현                            | 맥락     | 정확성  |
+| ----------------------------- | ------ | ---- |
+| "$a \cdot R \bmod p$로 저장"     | 데이터 표현 | ✅ 정확 |
+| "$T \cdot R^{-1} \bmod p$ 계산" | 연산 의미  | ✅ 정확 |
+
+**둘 다 맞고, 서로 다른 측면을 설명하는 것입니다.**
 
 ### 필요한 상수 3개
 
