@@ -620,29 +620,61 @@ $$
 3. **행렬 곱**: $Y_{\mathrm{2d}} = \mathrm{col} \times W_{\mathrm{flat}}^T \in \mathbb{R}^{N \cdot O_H \cdot O_W \times O_C}$
 4. **축 재배치**: $(N \cdot O_H \cdot O_W, O_C) \rightarrow (N, O_C, O_H, O_W)$
 
-### Backward 과정
+### Backward 과정: 유도
 
-기울기 $\frac{\partial \mathcal{L}}{\partial Y}$가 $(N, O_C, O_H, O_W)$로 주어질 때:
+기울기 $\frac{\partial \mathcal{L}}{\partial Y}$가 $(N, O_C, O_H, O_W)$로 주어질 때, 이를 축 재배치하여 $\frac{\partial \mathcal{L}}{\partial Y_{\mathrm{2d}}} \in \mathbb{R}^{N \cdot O_H \cdot O_W \times O_C}$로 변환한다.
 
-**입력 기울기** $\frac{\partial \mathcal{L}}{\partial x}$:
+#### 왜 이 공식이 나오는가: 행렬곱의 chain rule
 
-$$
-\frac{\partial \mathcal{L}}{\partial \mathrm{col}} = \frac{\partial \mathcal{L}}{\partial Y_{\mathrm{2d}}} \times W_{\mathrm{flat}} \in \mathbb{R}^{N \cdot O_H \cdot O_W \times C \cdot K_H \cdot K_W}
-$$
+순전파는 행렬곱이다:
 
-$$
-\frac{\partial \mathcal{L}}{\partial x} = \mathrm{col2im}\left(\frac{\partial \mathcal{L}}{\partial \mathrm{col}}\right) \in \mathbb{R}^{N \times C \times H \times W}
-$$
+$$Y_{\mathrm{2d}} = \mathrm{col} \times W_{\mathrm{flat}}^T$$
 
-**가중치 기울기** $\frac{\partial \mathcal{L}}{\partial W}$:
+$R = N \cdot O_H \cdot O_W$, $K = C \cdot K_H \cdot K_W$로 놓으면, 이것은 $(R \times K) \times (K \times O_C) = (R \times O_C)$ 형태의 행렬곱이다.
 
-$$
-\frac{\partial \mathcal{L}}{\partial W_{\mathrm{flat}}} = \left(\frac{\partial \mathcal{L}}{\partial Y_{\mathrm{2d}}}\right)^T \times \mathrm{col} \in \mathbb{R}^{O_C \times C \cdot K_H \cdot K_W}
-$$
+행렬곱 $Y = A B$의 역전파는:
 
-$$
-\frac{\partial \mathcal{L}}{\partial W} = \frac{\partial \mathcal{L}}{\partial W_{\mathrm{flat}}}.\mathrm{reshape}(O_C, C, K_H, K_W)
-$$
+$$\frac{\partial \mathcal{L}}{\partial A} = \frac{\partial \mathcal{L}}{\partial Y} \cdot B^T, \quad \frac{\partial \mathcal{L}}{\partial B} = A^T \cdot \frac{\partial \mathcal{L}}{\partial Y}$$
+
+이 공식이 성립하는 이유를 원소 수준에서 확인한다. $Y_{ij} = \sum_k A_{ik} B_{kj}$이므로:
+
+$$\frac{\partial \mathcal{L}}{\partial A_{ik}} = \sum_j \frac{\partial \mathcal{L}}{\partial Y_{ij}} \cdot \frac{\partial Y_{ij}}{\partial A_{ik}} = \sum_j \frac{\partial \mathcal{L}}{\partial Y_{ij}} \cdot B_{kj} = \sum_j (gY)_{ij} \cdot (B^T)_{jk}$$
+
+이것은 행렬곱 $gY \cdot B^T$의 $(i,k)$ 원소이다. 마찬가지로 $gB = A^T \cdot gY$.
+
+#### conv2d에 적용
+
+순전파에서 $A = \mathrm{col}$, $B = W_{\mathrm{flat}}^T$이므로:
+
+**입력 기울기** (col에 대한 기울기):
+
+$$\frac{\partial \mathcal{L}}{\partial \mathrm{col}} = \frac{\partial \mathcal{L}}{\partial Y_{\mathrm{2d}}} \cdot (W_{\mathrm{flat}}^T)^T = \frac{\partial \mathcal{L}}{\partial Y_{\mathrm{2d}}} \cdot W_{\mathrm{flat}} \in \mathbb{R}^{R \times K}$$
+
+col은 im2col의 출력이므로, col에 대한 기울기를 원래 이미지 shape으로 복원하려면 col2im을 적용한다:
+
+$$\frac{\partial \mathcal{L}}{\partial x} = \mathrm{col2im}\left(\frac{\partial \mathcal{L}}{\partial \mathrm{col}}\right) \in \mathbb{R}^{N \times C \times H \times W}$$
+
+**가중치 기울기** ($W_{\mathrm{flat}}^T$에 대한 기울기):
+
+$$\frac{\partial \mathcal{L}}{\partial W_{\mathrm{flat}}^T} = \mathrm{col}^T \cdot \frac{\partial \mathcal{L}}{\partial Y_{\mathrm{2d}}} \in \mathbb{R}^{K \times O_C}$$
+
+전치하면:
+
+$$\frac{\partial \mathcal{L}}{\partial W_{\mathrm{flat}}} = \left(\frac{\partial \mathcal{L}}{\partial Y_{\mathrm{2d}}}\right)^T \cdot \mathrm{col} \in \mathbb{R}^{O_C \times K}$$
+
+reshape으로 원래 커널 shape 복원:
+
+$$\frac{\partial \mathcal{L}}{\partial W} = \frac{\partial \mathcal{L}}{\partial W_{\mathrm{flat}}}.\mathrm{reshape}(O_C, C, K_H, K_W)$$
+
+#### col2im이 im2col의 "전치 연산"인 이유
+
+im2col을 선형 변환 $T: \mathbb{R}^{N \times C \times H \times W} \to \mathbb{R}^{R \times K}$로 볼 수 있다. 이 변환은 같은 픽셀을 여러 패치에 복사하는 연산이다.
+
+chain rule에서 기울기 전파는 항상 순전파의 **전치(adjoint)**를 사용한다. im2col의 전치란 "각 패치에서 온 기울기를 원래 픽셀에 합산"하는 것 — 이것이 바로 col2im의 scatter-add이다.
+
+$$\langle \mathrm{im2col}(x),\, g_{\mathrm{col}} \rangle = \langle x,\, \mathrm{col2im}(g_{\mathrm{col}}) \rangle$$
+
+이 내적 관계가 성립하므로 col2im은 im2col의 수학적 전치(adjoint)이다.
 
 ### Rust 구현
 
